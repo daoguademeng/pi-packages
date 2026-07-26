@@ -72,6 +72,12 @@ describe("SessionLifecycleHandler", () => {
 
       expect(manager.clearCompleted).toHaveBeenCalled();
     });
+
+    it("clears pending notification state so old-session nudges cannot fire into the next session", () => {
+      handler.handleSessionBeforeSwitch();
+
+      expect(mockDisposeNotifications).toHaveBeenCalled();
+    });
   });
 
   describe("handleSessionShutdown", () => {

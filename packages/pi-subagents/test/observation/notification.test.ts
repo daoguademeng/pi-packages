@@ -293,5 +293,20 @@ describe("NotificationManager", () => {
       system.onParentAgentEnd();
       expect(args.sendMessage).not.toHaveBeenCalled();
     });
+
+    it("re-arms after dispose — a session switch drops old state without wedging the next session", () => {
+      const args = makeArgs();
+      const system = makeManager(args);
+      system.onParentAgentStart();
+      system.sendCompletion(createTestSubagent({ id: "old-session" }));
+      vi.advanceTimersByTime(300); // held mid-stream in the old session
+      system.dispose(); // session switch clears notification state
+      // New session: no agent loop is running; a fresh completion must deliver.
+      system.sendCompletion(createTestSubagent({ id: "new-session" }));
+      vi.advanceTimersByTime(300);
+      expect(args.sendMessage).toHaveBeenCalledOnce();
+      const content = (args.sendMessage.mock.calls[0][0] as { content: string }).content;
+      expect(content).toContain("new-session");
+    });
   });
 });

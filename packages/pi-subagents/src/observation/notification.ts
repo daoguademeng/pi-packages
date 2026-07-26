@@ -157,10 +157,18 @@ export class NotificationManager implements NotificationSystem {
     this.scheduleNudge(record.id, () => this.emitIndividualNudge(record));
   }
 
+  /**
+   * Drop all pending and held nudges and reset loop tracking. Also called on
+   * session switch: the manager stays live and re-arms for the next session,
+   * so stale nudges cannot fire into a session that never spawned them — and
+   * a stale streaming flag cannot wedge future nudges behind an agent end
+   * that already happened.
+   */
   dispose(): void {
     for (const timer of this.pendingNudges.values()) clearTimeout(timer);
     this.pendingNudges.clear();
     this.heldNudges.clear();
+    this.parentStreaming = false;
   }
 
   /** Mark the parent agent loop as streaming; fired nudges are held until agent end. */

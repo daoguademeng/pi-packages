@@ -44,6 +44,10 @@ export class SessionLifecycleHandler {
 
   handleSessionBeforeSwitch(): void {
     this.manager.clearCompleted();
+    // Nudges scheduled or held for old-session records must not fire into the
+    // next session (their tool-use-ids and records mean nothing there). The
+    // notification manager re-arms after disposal.
+    this.disposeNotifications();
   }
 
   // Cleanup order matters:
