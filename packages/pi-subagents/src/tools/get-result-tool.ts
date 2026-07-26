@@ -12,6 +12,25 @@ export interface GetResultToolManager {
 	getRecord(id: string): Subagent | undefined;
 }
 
+// ---- Helpers ----
+
+/**
+ * Resolve when the run promise settles or the signal aborts, whichever comes
+ * first. Run promises always resolve (errors are captured on the record), so
+ * no rejection path is needed; the abort listener is removed on settlement.
+ */
+function waitUntilSettledOrAborted(promise: Promise<void>, signal: AbortSignal): Promise<void> {
+	if (signal.aborted) return Promise.resolve();
+	return new Promise((resolve) => {
+		const onAbort = () => resolve();
+		signal.addEventListener("abort", onAbort, { once: true });
+		void promise.finally(() => {
+			signal.removeEventListener("abort", onAbort);
+			resolve();
+		});
+	});
+}
+
 // ---- Class ----
 
 export class GetResultTool {
@@ -23,7 +42,7 @@ export class GetResultTool {
 	async execute(
 		_toolCallId: string,
 		params: { agent_id: string; wait?: boolean; verbose?: boolean },
-		_signal: AbortSignal,
+		signal: AbortSignal,
 		_onUpdate: unknown,
 		_ctx: unknown,
 	) {
@@ -35,8 +54,10 @@ export class GetResultTool {
 		// Wait for completion if requested. isActive() covers queued agents too:
 		// their promise is captured eagerly at spawn (scheduleVia), so waiting on a
 		// still-queued agent resolves when its slot frees and the run finishes.
+		// The wait races the caller's abort signal so a hung or slow run cannot pin
+		// the parent tool call; on abort the current status is reported instead.
 		if (params.wait && record.isActive() && record.promise) {
-			await record.promise;
+			await waitUntilSettledOrAborted(record.promise, signal);
 		}
 
 		// Pull-delivery edge: the parent is collecting the settled outcome here, so
