@@ -101,6 +101,64 @@ describe("GetResultTool", () => {
 		expect(record.consumed).toBe(true);
 	});
 
+	it("waits for a queued agent when wait=true (promise is captured at spawn)", async () => {
+		const sessionStub = createSubagentSessionStub();
+		sessionStub.runTurnLoop.mockResolvedValue({ responseText: "Finished after queue.", aborted: false, steered: false });
+		const record = createTestSubagent({
+			status: "queued",
+			completedAt: undefined,
+			execution: makeStubExecution({
+				createSubagentSession: async () => toSubagentSession(sessionStub),
+			}),
+		});
+		// Simulate limiter admission: the thunk starts only after the wait began.
+		let admit!: () => void;
+		record.scheduleVia(
+			(thunk) =>
+				new Promise<void>((resolve) => {
+					admit = () => void thunk().then(resolve);
+				}),
+		);
+		const records = new Map([["agent-1", record]]);
+		const resultPromise = execute(makeManager(records), { agent_id: "agent-1", wait: true });
+		admit(); // a slot frees while the parent is waiting
+		const result = await resultPromise;
+		expect(result.content[0].text).toContain("Finished after queue.");
+		expect(record.consumed).toBe(true);
+	});
+
+	it("stops waiting and reports current status when the signal aborts mid-wait", async () => {
+		const record = createTestSubagent({ status: "running", completedAt: undefined });
+		record.scheduleVia(() => new Promise<void>(() => {})); // hung run — never settles
+		const records = new Map([["agent-1", record]]);
+		const controller = new AbortController();
+		const tool = new GetResultTool(makeManager(records), testRegistry);
+		const resultPromise = tool.execute("tc-1", { agent_id: "agent-1", wait: true }, controller.signal, undefined, STUB_CTX);
+		controller.abort();
+		const raced = await Promise.race([
+			resultPromise.then(() => "resolved"),
+			new Promise((r) => setTimeout(() => r("hung"), 50)),
+		]);
+		expect(raced).toBe("resolved");
+		const result = await resultPromise;
+		expect(result.content[0].text).toContain("running");
+		expect(record.consumed).toBe(false);
+	});
+
+	it("does not wait at all when the signal is already aborted", async () => {
+		const record = createTestSubagent({ status: "running", completedAt: undefined });
+		record.scheduleVia(() => new Promise<void>(() => {}));
+		const records = new Map([["agent-1", record]]);
+		const controller = new AbortController();
+		controller.abort();
+		const tool = new GetResultTool(makeManager(records), testRegistry);
+		const raced = await Promise.race([
+			tool.execute("tc-1", { agent_id: "agent-1", wait: true }, controller.signal, undefined, STUB_CTX).then(() => "resolved"),
+			new Promise((r) => setTimeout(() => r("hung"), 50)),
+		]);
+		expect(raced).toBe("resolved");
+	});
+
 	it("includes conversation when verbose=true", async () => {
 		const record = createTestSubagent();
 		const stub = createSubagentSessionStub();

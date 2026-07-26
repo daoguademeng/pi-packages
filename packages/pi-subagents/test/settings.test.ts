@@ -287,6 +287,44 @@ describe("SettingsManager", () => {
       const sm = new SettingsManager({ emit: vi.fn(), cwd: "/tmp", agentDir: "/nonexistent" });
       expect(sm.unconsumedSessionRetentionMinutes).toBe(720);
     });
+
+    it("defaults to abortAllOnInterrupt: true (current behavior preserved)", () => {
+      const sm = new SettingsManager({ emit: vi.fn(), cwd: "/tmp", agentDir: "/nonexistent" });
+      expect(sm.abortAllOnInterrupt).toBe(true);
+    });
+  });
+
+  describe("abortAllOnInterrupt persistence", () => {
+    let dirs: SettingsDirs;
+    let globalDir: string;
+    let projectDir: string;
+    let projectFile: () => string;
+    let writeProject: (obj: unknown) => void;
+
+    beforeEach(() => {
+      dirs = createSettingsDirs("subagents.json");
+      ({ globalDir, projectDir, projectFile, writeProject } = dirs);
+    });
+
+    afterEach(() => {
+      dirs.dispose();
+    });
+
+    it("loads abortAllOnInterrupt: false from the settings file", () => {
+      writeProject({ abortAllOnInterrupt: false });
+      const sm = new SettingsManager({ emit: vi.fn(), cwd: projectDir, agentDir: globalDir });
+      sm.load();
+      expect(sm.abortAllOnInterrupt).toBe(false);
+    });
+
+    it("applyAbortAllOnInterrupt persists the value and returns a toast", () => {
+      const sm = new SettingsManager({ emit: vi.fn(), cwd: projectDir, agentDir: globalDir });
+      const toast = sm.applyAbortAllOnInterrupt(false);
+      expect(sm.abortAllOnInterrupt).toBe(false);
+      expect(toast.message).toContain("off");
+      const onDisk = JSON.parse(readFileSync(projectFile(), "utf8")) as { abortAllOnInterrupt?: boolean };
+      expect(onDisk.abortAllOnInterrupt).toBe(false);
+    });
   });
 
   describe("retention setter normalization", () => {
@@ -456,7 +494,7 @@ describe("SettingsManager", () => {
   describe("snapshot()", () => {
     it("returns default values before any changes", () => {
       const sm = new SettingsManager({ emit: vi.fn(), cwd: "/tmp", agentDir: "/nonexistent" });
-      expect(sm.snapshot()).toEqual({ maxConcurrent: 4, defaultMaxTurns: 0, graceTurns: 5, consumedSessionRetentionMinutes: 10, unconsumedSessionRetentionMinutes: 720 });
+      expect(sm.snapshot()).toEqual({ maxConcurrent: 4, defaultMaxTurns: 0, graceTurns: 5, consumedSessionRetentionMinutes: 10, unconsumedSessionRetentionMinutes: 720, abortAllOnInterrupt: true });
     });
 
     it("reflects mutations: defaultMaxTurns undefined maps to 0 in snapshot", () => {
@@ -464,20 +502,20 @@ describe("SettingsManager", () => {
       sm.defaultMaxTurns = undefined;
       sm.graceTurns = 3;
       sm.maxConcurrent = 8;
-      expect(sm.snapshot()).toEqual({ maxConcurrent: 8, defaultMaxTurns: 0, graceTurns: 3, consumedSessionRetentionMinutes: 10, unconsumedSessionRetentionMinutes: 720 });
+      expect(sm.snapshot()).toEqual({ maxConcurrent: 8, defaultMaxTurns: 0, graceTurns: 3, consumedSessionRetentionMinutes: 10, unconsumedSessionRetentionMinutes: 720, abortAllOnInterrupt: true });
     });
 
     it("reflects a concrete defaultMaxTurns value", () => {
       const sm = new SettingsManager({ emit: vi.fn(), cwd: "/tmp", agentDir: "/nonexistent" });
       sm.defaultMaxTurns = 20;
-      expect(sm.snapshot()).toEqual({ maxConcurrent: 4, defaultMaxTurns: 20, graceTurns: 5, consumedSessionRetentionMinutes: 10, unconsumedSessionRetentionMinutes: 720 });
+      expect(sm.snapshot()).toEqual({ maxConcurrent: 4, defaultMaxTurns: 20, graceTurns: 5, consumedSessionRetentionMinutes: 10, unconsumedSessionRetentionMinutes: 720, abortAllOnInterrupt: true });
     });
 
     it("reflects mutated retention windows", () => {
       const sm = new SettingsManager({ emit: vi.fn(), cwd: "/tmp", agentDir: "/nonexistent" });
       sm.consumedSessionRetentionMinutes = 30;
       sm.unconsumedSessionRetentionMinutes = 1440;
-      expect(sm.snapshot()).toEqual({ maxConcurrent: 4, defaultMaxTurns: 0, graceTurns: 5, consumedSessionRetentionMinutes: 30, unconsumedSessionRetentionMinutes: 1440 });
+      expect(sm.snapshot()).toEqual({ maxConcurrent: 4, defaultMaxTurns: 0, graceTurns: 5, consumedSessionRetentionMinutes: 30, unconsumedSessionRetentionMinutes: 1440, abortAllOnInterrupt: true });
     });
   });
 
@@ -499,7 +537,7 @@ describe("SettingsManager", () => {
       const toast = sm.saveAndNotify("Max concurrency set to 5");
       expect(toast).toEqual({ message: "Max concurrency set to 5", level: "info" });
       const written = JSON.parse(readFileSync(join(projectDir, ".pi", "subagents.json"), "utf-8"));
-      expect(written).toEqual({ maxConcurrent: 5, defaultMaxTurns: 0, graceTurns: 5, consumedSessionRetentionMinutes: 10, unconsumedSessionRetentionMinutes: 720 });
+      expect(written).toEqual({ maxConcurrent: 5, defaultMaxTurns: 0, graceTurns: 5, consumedSessionRetentionMinutes: 10, unconsumedSessionRetentionMinutes: 720, abortAllOnInterrupt: true });
     });
 
     it("emits subagents:settings_changed with persisted:true on success", () => {
@@ -508,7 +546,7 @@ describe("SettingsManager", () => {
       sm.graceTurns = 3;
       sm.saveAndNotify("Grace turns set to 3");
       expect(emit).toHaveBeenCalledWith("subagents:settings_changed", {
-        settings: { maxConcurrent: 4, defaultMaxTurns: 0, graceTurns: 3, consumedSessionRetentionMinutes: 10, unconsumedSessionRetentionMinutes: 720 },
+        settings: { maxConcurrent: 4, defaultMaxTurns: 0, graceTurns: 3, consumedSessionRetentionMinutes: 10, unconsumedSessionRetentionMinutes: 720, abortAllOnInterrupt: true },
         persisted: true,
       });
     });
@@ -536,7 +574,7 @@ describe("SettingsManager", () => {
         const sm = new SettingsManager({ emit, cwd: filePosingAsCwd, agentDir: "/nonexistent" });
         sm.saveAndNotify("something");
         expect(emit).toHaveBeenCalledWith("subagents:settings_changed", {
-          settings: { maxConcurrent: 4, defaultMaxTurns: 0, graceTurns: 5, consumedSessionRetentionMinutes: 10, unconsumedSessionRetentionMinutes: 720 },
+          settings: { maxConcurrent: 4, defaultMaxTurns: 0, graceTurns: 5, consumedSessionRetentionMinutes: 10, unconsumedSessionRetentionMinutes: 720, abortAllOnInterrupt: true },
           persisted: false,
         });
       } finally {

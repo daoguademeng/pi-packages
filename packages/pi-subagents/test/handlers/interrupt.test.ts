@@ -13,6 +13,26 @@ describe("InterruptHandler", () => {
     handler = new InterruptHandler(manager);
   });
 
+  describe("abort policy", () => {
+    it("does not abort when the policy declines", () => {
+      const decliningHandler = new InterruptHandler(manager, () => false);
+      const controller = new AbortController();
+      decliningHandler.handleTurnStart({ signal: controller.signal });
+      controller.abort();
+      expect(mockAbortAll).not.toHaveBeenCalled();
+    });
+
+    it("consults the policy at abort time, not at wiring time", () => {
+      let allow = false;
+      const policyHandler = new InterruptHandler(manager, () => allow);
+      const controller = new AbortController();
+      policyHandler.handleTurnStart({ signal: controller.signal });
+      allow = true; // e.g. the setting was changed mid-session
+      controller.abort();
+      expect(mockAbortAll).toHaveBeenCalled();
+    });
+  });
+
   describe("handleTurnStart", () => {
     it("aborts all subagents when the latched signal fires", () => {
       const controller = new AbortController();
