@@ -12,6 +12,8 @@ export interface SubagentsSettingsManager {
   applyGraceTurns(n: number): { message: string; level: "info" | "warning" };
   applyConsumedSessionRetentionMinutes(n: number): { message: string; level: "info" | "warning" };
   applyUnconsumedSessionRetentionMinutes(n: number): { message: string; level: "info" | "warning" };
+  readonly abortAllOnInterrupt: boolean;
+  applyAbortAllOnInterrupt(b: boolean): { message: string; level: "info" | "warning" };
 }
 
 /** Narrow UI interface — only the ctx.ui methods the settings handler calls. */
@@ -92,6 +94,11 @@ const NUMERIC_SETTINGS: readonly NumericSettingDescriptor[] = [
   },
 ];
 
+// ---- Boolean toggle ----
+
+/** Label prefix for the abort-on-interrupt toggle — selected entries flip the value directly. */
+const ABORT_ON_INTERRUPT_LABEL = "Abort subagents on interrupt";
+
 // ---- Class ----
 
 /**
@@ -104,11 +111,21 @@ export class SubagentsSettingsHandler {
   constructor(private readonly settings: SubagentsSettingsManager) {}
 
   async handle({ ui }: { ui: SubagentsSettingsUI }): Promise<void> {
-    const options = NUMERIC_SETTINGS.map(
-      (d) => `${d.label} (current: ${d.currentDisplay(this.settings)})`,
-    );
+    const options = [
+      ...NUMERIC_SETTINGS.map(
+        (d) => `${d.label} (current: ${d.currentDisplay(this.settings)})`,
+      ),
+      `${ABORT_ON_INTERRUPT_LABEL} (current: ${this.settings.abortAllOnInterrupt ? "on" : "off"})`,
+    ];
     const choice = await ui.select("Settings", options);
     if (!choice) return;
+
+    // Boolean toggle: flip directly, no input prompt.
+    if (choice.startsWith(ABORT_ON_INTERRUPT_LABEL)) {
+      const toast = this.settings.applyAbortAllOnInterrupt(!this.settings.abortAllOnInterrupt);
+      ui.notify(toast.message, toast.level);
+      return;
+    }
 
     const descriptor = NUMERIC_SETTINGS.find((d) => choice.startsWith(d.label));
     if (!descriptor) return;

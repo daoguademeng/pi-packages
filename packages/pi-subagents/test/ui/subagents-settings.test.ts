@@ -29,6 +29,11 @@ function makeSettings() {
       message: "Unconsumed-session retention set to 1440 min",
       level: "info",
     })),
+    abortAllOnInterrupt: true,
+    applyAbortAllOnInterrupt: vi.fn((): { message: string; level: "info" | "warning" } => ({
+      message: "Abort subagents on interrupt: off",
+      level: "info",
+    })),
   };
 }
 
@@ -58,7 +63,17 @@ describe("SubagentsSettingsHandler", () => {
       "Grace turns (current: 5)",
       "Consumed-session retention (current: 10 min)",
       "Unconsumed-session retention (current: 720 min)",
+      "Abort subagents on interrupt (current: on)",
     ]);
+  });
+
+  it("toggles abort-on-interrupt directly from the menu without an input prompt", async () => {
+    const { handler, settings } = makeHandler();
+    const ui = makeMenuUI(["Abort subagents on interrupt (current: on)"]);
+    await handler.handle({ ui });
+    expect(settings.applyAbortAllOnInterrupt).toHaveBeenCalledWith(false);
+    expect(ui.input).not.toHaveBeenCalled();
+    expect(ui.notify).toHaveBeenCalledWith("Abort subagents on interrupt: off", "info");
   });
 
   it("applies no change when the settings list is cancelled", async () => {

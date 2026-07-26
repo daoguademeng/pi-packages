@@ -29,7 +29,15 @@ export class InterruptHandler {
   private latched?: AbortSignal;
   private detach?: () => void;
 
-  constructor(private readonly manager: InterruptManager) {}
+  /**
+   * `shouldAbortAll` is the abort policy, consulted at abort time (not wiring
+   * time) so a mid-session settings change takes effect. Defaults to always
+   * aborting — the historical behavior.
+   */
+  constructor(
+    private readonly manager: InterruptManager,
+    private readonly shouldAbortAll: () => boolean = () => true,
+  ) {}
 
   handleTurnStart(ctx: InterruptCtx): void {
     const signal = ctx.signal;
@@ -41,7 +49,7 @@ export class InterruptHandler {
     if (!signal) return;
 
     const onAbort = (): void => {
-      this.manager.abortAll();
+      if (this.shouldAbortAll()) this.manager.abortAll();
     };
     signal.addEventListener("abort", onAbort, { once: true });
     this.detach = () => signal.removeEventListener("abort", onAbort);

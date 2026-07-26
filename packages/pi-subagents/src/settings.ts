@@ -18,6 +18,8 @@ export interface SubagentsSettings {
   consumedSessionRetentionMinutes?: number;
   /** Minutes an unconsumed agent's session is retained (safety cap). */
   unconsumedSessionRetentionMinutes?: number;
+  /** Abort all subagents (background included) when the parent turn is interrupted (ESC). */
+  abortAllOnInterrupt?: boolean;
 }
 
 
@@ -28,6 +30,7 @@ const DEFAULT_MAX_CONCURRENT = 4;
 const DEFAULT_GRACE_TURNS = 5;
 const DEFAULT_CONSUMED_RETENTION_MINUTES = 10;
 const DEFAULT_UNCONSUMED_RETENTION_MINUTES = 720;
+const DEFAULT_ABORT_ALL_ON_INTERRUPT = true;
 
 /**
  * Owns all three in-memory settings values and their load/save/persist cycle.
@@ -39,6 +42,7 @@ export class SettingsManager {
   private _maxConcurrent: number = DEFAULT_MAX_CONCURRENT;
   private _consumedSessionRetentionMinutes: number = DEFAULT_CONSUMED_RETENTION_MINUTES;
   private _unconsumedSessionRetentionMinutes: number = DEFAULT_UNCONSUMED_RETENTION_MINUTES;
+  private _abortAllOnInterrupt: boolean = DEFAULT_ABORT_ALL_ON_INTERRUPT;
 
   private readonly emit: SettingsEmit;
   private readonly cwd: string;
@@ -104,6 +108,16 @@ export class SettingsManager {
     this._unconsumedSessionRetentionMinutes = clampRetentionMinutes(n);
   }
 
+  // ── abortAllOnInterrupt: whether ESC also stops background agents ──
+
+  get abortAllOnInterrupt(): boolean {
+    return this._abortAllOnInterrupt;
+  }
+
+  set abortAllOnInterrupt(b: boolean) {
+    this._abortAllOnInterrupt = b;
+  }
+
   // ── Lifecycle methods ──
 
   /**
@@ -120,6 +134,7 @@ export class SettingsManager {
       this.consumedSessionRetentionMinutes = settings.consumedSessionRetentionMinutes;
     if (typeof settings.unconsumedSessionRetentionMinutes === "number")
       this.unconsumedSessionRetentionMinutes = settings.unconsumedSessionRetentionMinutes;
+    if (typeof settings.abortAllOnInterrupt === "boolean") this.abortAllOnInterrupt = settings.abortAllOnInterrupt;
     this.emit("subagents:settings_loaded", { settings });
     return settings;
   }
@@ -134,6 +149,7 @@ export class SettingsManager {
     graceTurns: number;
     consumedSessionRetentionMinutes: number;
     unconsumedSessionRetentionMinutes: number;
+    abortAllOnInterrupt: boolean;
   } {
     return {
       maxConcurrent: this._maxConcurrent,
@@ -141,6 +157,7 @@ export class SettingsManager {
       graceTurns: this._graceTurns,
       consumedSessionRetentionMinutes: this._consumedSessionRetentionMinutes,
       unconsumedSessionRetentionMinutes: this._unconsumedSessionRetentionMinutes,
+      abortAllOnInterrupt: this._abortAllOnInterrupt,
     };
   }
 
@@ -176,6 +193,12 @@ export class SettingsManager {
   applyConsumedSessionRetentionMinutes(n: number): { message: string; level: "info" | "warning" } {
     this.consumedSessionRetentionMinutes = n; // setter normalizes: clamp [1, ceiling]
     return this.saveAndNotify(`Consumed-session retention set to ${this.consumedSessionRetentionMinutes} min`);
+  }
+
+  /** Set whether ESC aborts all subagents, persist, and return the toast. */
+  applyAbortAllOnInterrupt(b: boolean): { message: string; level: "info" | "warning" } {
+    this.abortAllOnInterrupt = b;
+    return this.saveAndNotify(`Abort subagents on interrupt: ${b ? "on" : "off"}`);
   }
 
   /** Set the unconsumed-session retention window (minutes), persist, and return the toast. */
@@ -246,6 +269,9 @@ function sanitize(raw: unknown): SubagentsSettings {
   }
   if (isRetentionMinutes(r.unconsumedSessionRetentionMinutes)) {
     out.unconsumedSessionRetentionMinutes = r.unconsumedSessionRetentionMinutes;
+  }
+  if (typeof r.abortAllOnInterrupt === "boolean") {
+    out.abortAllOnInterrupt = r.abortAllOnInterrupt;
   }
   return out;
 }
