@@ -190,6 +190,9 @@ export default function (pi: ExtensionAPI) {
         registry,
         cwd: ctx.cwd,
         readFile: (path) => readFileSync(path, "utf8"),
+        // Same event the steer_subagent tool emits, so listeners cannot tell
+        // an operator steer from a model steer.
+        onSteered: (id, message) => pi.events.emit("subagents:steered", { id, message }),
       });
     },
   });

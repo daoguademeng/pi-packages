@@ -135,3 +135,18 @@ describe("fileSnapshotSource", () => {
     expect(source.getMessages()).toEqual([]);
   });
 });
+
+describe("transcript source steering", () => {
+  it("liveSource delegates steer to the record", async () => {
+    const steer = vi.fn(async () => ({ kind: "delivered" }) as const);
+    const record = makeNavigable({ steer });
+    const outcome = await liveSource(record).steer?.("focus on the tests");
+    expect(steer).toHaveBeenCalledWith("focus on the tests");
+    expect(outcome).toEqual({ kind: "delivered" });
+  });
+
+  it("fileSnapshotSource exposes no steer", () => {
+    const headerOnly = JSON.stringify({ type: "session", version: 3, id: "s1", timestamp: "2026-06-23T00:00:00Z", cwd: "/proj" });
+    expect(fileSnapshotSource("/tasks/empty.jsonl", () => headerOnly).steer).toBeUndefined();
+  });
+});

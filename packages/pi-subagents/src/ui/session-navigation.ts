@@ -15,7 +15,7 @@
 import { buildSessionContext, parseSessionEntries, type SessionEntry, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { AgentConfigLookup } from "#src/config/agent-types";
 import { isRunningStatus, type SubagentStatus } from "#src/lifecycle/subagent-state";
-import type { AgentSessionEvent, SessionMessage, SubagentType } from "#src/types";
+import type { AgentSessionEvent, SessionMessage, SteerOutcome, SubagentType } from "#src/types";
 import { formatDuration, getDisplayName } from "#src/ui/display";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -35,6 +35,7 @@ export interface NavigableSubagent {
   /** Persisted transcript path, retained after the live session is released. */
   readonly outputFile: string | undefined;
   isSessionReady(): boolean;
+  steer(message: string): Promise<SteerOutcome>;
   subscribeToUpdates(fn: (event: AgentSessionEvent) => void): (() => void) | undefined;
   getToolDefinition(name: string): ToolDefinition | undefined;
 }
@@ -74,6 +75,12 @@ export interface TranscriptSource {
   subscribe(onChange: (event?: AgentSessionEvent) => void): (() => void) | undefined;
   /** Running-agent streaming state, or undefined when not streaming. */
   streaming(): StreamingState | undefined;
+  /**
+   * Send a mid-run steering message to the agent behind this transcript, or
+   * undefined for sources that cannot be steered (static snapshots). Same
+   * delivery path and outcome semantics as the `steer_subagent` tool.
+   */
+  steer?(message: string): Promise<SteerOutcome>;
   /** Resolve a registered tool definition by name, for Pi's tool-execution components. */
   getToolDefinition(name: string): ToolDefinition | undefined;
 }
@@ -134,6 +141,7 @@ export function liveSource(record: NavigableSubagent): TranscriptSource {
       isRunningStatus(record.status)
         ? { activeTools: record.activeTools, responseText: record.responseText }
         : undefined,
+    steer: (message) => record.steer(message),
     getToolDefinition: (name) => record.getToolDefinition(name),
   };
 }

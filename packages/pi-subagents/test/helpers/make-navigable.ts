@@ -19,6 +19,7 @@ export function makeNavigable(overrides: Partial<NavigableSubagent> = {}): Navig
     agentMessages: [],
     outputFile: undefined,
     isSessionReady: () => true,
+    steer: vi.fn(async () => ({ kind: "delivered" }) as const),
     subscribeToUpdates: vi.fn(() => () => {}),
     getToolDefinition: vi.fn(() => undefined),
     ...overrides,

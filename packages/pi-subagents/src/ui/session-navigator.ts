@@ -30,6 +30,7 @@ import {
 import {
   type Component,
   Container,
+  Input,
   type KeyId,
   type MarkdownTheme,
   matchesKey,
@@ -39,7 +40,7 @@ import {
   visibleWidth,
 } from "@earendil-works/pi-tui";
 import type { AgentConfigLookup } from "#src/config/agent-types";
-import type { AgentSessionEvent, SessionMessage } from "#src/types";
+import type { AgentSessionEvent, SessionMessage, SteerOutcome } from "#src/types";
 import { describeActivity, type Theme } from "#src/ui/display";
 import { GLYPHS } from "#src/ui/glyphs";
 import { fileSnapshotSource, listNavigableAgents, liveSource, type NavigableSubagent, type TranscriptSource } from "#src/ui/session-navigation";
@@ -75,6 +76,8 @@ export interface SessionNavigatorParams {
   cwd: string;
   /** Reads a persisted session file for the file-snapshot source. */
   readFile: (path: string) => string;
+  /** Called after a steering message is accepted (delivered or buffered) from the overlay. */
+  onSteered?: (id: string, message: string) => void;
 }
 
 /** Options for the read-only transcript overlay. */
@@ -85,6 +88,8 @@ export interface TranscriptOverlayOptions {
   done: (result: undefined) => void;
   cwd: string;
   markdownTheme: MarkdownTheme;
+  /** Called after a steering message is accepted (delivered or buffered). */
+  onSteered?: (message: string) => void;
 }
 
 /**
@@ -95,7 +100,7 @@ export interface TranscriptOverlayOptions {
  * manager, so it stays a reactive consumer with no inbound call into the core.
  */
 export class SessionNavigatorHandler {
-  async handle({ ui, agents, registry, cwd, readFile }: SessionNavigatorParams): Promise<void> {
+  async handle({ ui, agents, registry, cwd, readFile, onSteered }: SessionNavigatorParams): Promise<void> {
     const entries = listNavigableAgents(agents, registry);
     if (entries.length === 0) {
       ui.notify("No subagent sessions to view.", "info");
@@ -117,9 +122,11 @@ export class SessionNavigatorHandler {
       return;
     }
     const markdownTheme = getMarkdownTheme();
+    const overlaySteered =
+      entry.kind === "live" ? (message: string) => onSteered?.(entry.record.id, message) : undefined;
     await ui.custom<undefined>(
       (tui, theme, _keybindings, done) =>
-        new TranscriptOverlay({ tui, theme, source, done, cwd, markdownTheme }),
+        new TranscriptOverlay({ tui, theme, source, done, cwd, markdownTheme, onSteered: overlaySteered }),
       {
         overlay: true,
         overlayOptions: { anchor: "center", width: "90%", maxHeight: `${VIEWPORT_HEIGHT_PCT}%` },
@@ -173,22 +180,36 @@ export class TranscriptOverlay implements Component {
   private liveAssistant: AssistantMessageComponent | undefined;
   private liveMessage: AssistantMessage | undefined;
   private liveAssistantLinesCache: { width: number; lines: readonly string[] } | undefined;
+  /** Steering composer; while present, all input routes to it. */
+  private composer: Input | undefined;
+  /** Transient outcome of the last steer, shown in the footer until the next compose. */
+  private steerNotice: string | undefined;
+  private readonly onSteered: ((message: string) => void) | undefined;
 
-  constructor({ tui, theme, source, done, cwd, markdownTheme }: TranscriptOverlayOptions) {
+  constructor({ tui, theme, source, done, cwd, markdownTheme, onSteered }: TranscriptOverlayOptions) {
     this.tui = tui;
     this.theme = theme;
     this.source = source;
     this.done = done;
     this.cwd = cwd;
     this.markdownTheme = markdownTheme;
+    this.onSteered = onSteered;
     this.consumeNewSettled();
     this.unsubscribe = source.subscribe((event) => this.handleSourceChange(event));
   }
 
   handleInput(data: string): void {
+    if (this.composer) {
+      this.composer.handleInput(data);
+      return;
+    }
     if (matchesKey(data, "escape") || matchesKey(data, "q")) {
       this.closed = true;
       this.done(undefined);
+      return;
+    }
+    if (matchesKey(data, "s") && this.steerAvailable()) {
+      this.openComposer();
       return;
     }
 
@@ -230,12 +251,17 @@ export class TranscriptOverlay implements Component {
     for (let i = 0; i < viewportHeight; i++) lines.push(row(visible[i] ?? ""));
 
     lines.push(hrMid);
+    if (this.composer) {
+      const prompt = th.bold("Steer ❯ ");
+      const inputLine = this.composer.render(Math.max(1, innerW - visibleWidth(prompt)))[0] ?? "";
+      lines.push(row(prompt + inputLine));
+    }
     const scrollPct =
       totalLines <= viewportHeight
         ? "100%"
         : `${Math.round(((visibleStart + viewportHeight) / totalLines) * 100)}%`;
-    const footerLeft = th.fg("dim", `${totalLines} lines · ${scrollPct}`);
-    const footerRight = th.fg("dim", "↑↓ scroll · PgUp/PgDn · Esc close");
+    const footerLeft = th.fg("dim", this.steerNotice ?? `${totalLines} lines · ${scrollPct}`);
+    const footerRight = th.fg("dim", this.footerHint());
     const footerGap = Math.max(1, innerW - visibleWidth(footerLeft) - visibleWidth(footerRight));
     lines.push(row(footerLeft + " ".repeat(footerGap) + footerRight));
     lines.push(hrBot);
@@ -270,7 +296,59 @@ export class TranscriptOverlay implements Component {
 
   private viewportHeight(): number {
     const maxRows = Math.floor((this.tui.terminal.rows * VIEWPORT_HEIGHT_PCT) / 100);
-    return Math.max(MIN_VIEWPORT, maxRows - CHROME_LINES);
+    const chrome = CHROME_LINES + (this.composer ? 1 : 0);
+    return Math.max(MIN_VIEWPORT, maxRows - chrome);
+  }
+
+  // ---- Steering ----
+
+  /** Steerable = the source can deliver a steer and the agent is still running. */
+  private steerAvailable(): boolean {
+    return this.source.steer !== undefined && this.source.streaming() !== undefined;
+  }
+
+  private footerHint(): string {
+    if (this.composer) return "Enter send · Esc cancel";
+    const base = "↑↓ scroll · PgUp/PgDn · Esc close";
+    return this.steerAvailable() ? `${base} · s steer` : base;
+  }
+
+  private openComposer(): void {
+    const composer = new Input();
+    composer.focused = true;
+    composer.onSubmit = (value) => this.submitSteer(value.trim());
+    composer.onEscape = () => {
+      this.composer = undefined;
+    };
+    this.steerNotice = undefined;
+    this.composer = composer;
+  }
+
+  private submitSteer(message: string): void {
+    this.composer = undefined;
+    if (!message || !this.source.steer) return;
+    this.steerNotice = "Sending steering message…";
+    void this.source.steer(message).then(
+      (outcome) => this.finishSteer(outcome, message),
+      (err: unknown) => {
+        this.steerNotice = `✗ steer failed: ${err instanceof Error ? err.message : String(err)}`;
+        this.tui.requestRender();
+      },
+    );
+  }
+
+  private finishSteer(outcome: SteerOutcome, message: string): void {
+    if (this.closed) return;
+    if (outcome.kind === "rejected") {
+      this.steerNotice = `✗ not delivered — agent is no longer running (${outcome.status})`;
+    } else {
+      this.steerNotice =
+        outcome.kind === "buffered"
+          ? "✓ queued — delivers when the session initializes"
+          : "✓ sent — the agent will see it after its current tool";
+      this.onSteered?.(message);
+    }
+    this.tui.requestRender();
   }
 
   /** Settled transcript lines; each block renders once per width/content version. */

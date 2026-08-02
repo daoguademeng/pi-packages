@@ -55,7 +55,9 @@ function assistantSessionEvent(
   return { type, message, assistantMessageEvent } as unknown as AgentSessionEvent;
 }
 
-function makeOverlay(opts: { source?: TranscriptSource; done?: (r: undefined) => void; tui?: TUI } = {}) {
+function makeOverlay(
+  opts: { source?: TranscriptSource; done?: (r: undefined) => void; tui?: TUI; onSteered?: (message: string) => void } = {},
+) {
   return new TranscriptOverlay({
     tui: opts.tui ?? mockTui(),
     theme: ansiTheme(),
@@ -63,6 +65,7 @@ function makeOverlay(opts: { source?: TranscriptSource; done?: (r: undefined) =>
     done: opts.done ?? vi.fn(),
     cwd: "/test/cwd",
     markdownTheme: getMarkdownTheme(),
+    onSteered: opts.onSteered,
   });
 }
 
@@ -552,5 +555,206 @@ describe("SessionNavigatorHandler", () => {
 
     expect(ui.notify).toHaveBeenCalledWith("Could not read the session transcript file.", "error");
     expect(ui.custom).not.toHaveBeenCalled();
+  });
+});
+
+describe("TranscriptOverlay steering", () => {
+  function steerableSource(overrides: Partial<TranscriptSource> = {}): TranscriptSource {
+    return fakeSource({
+      streaming: () => ({ activeTools: new Map(), responseText: "" }),
+      steer: vi.fn(async () => ({ kind: "delivered" }) as const),
+      ...overrides,
+    });
+  }
+
+  function typeText(overlay: TranscriptOverlay, text: string): void {
+    for (const ch of text) overlay.handleInput(ch);
+  }
+
+  const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+  it("offers the steer key only for a steerable running source", () => {
+    const steerable = makeOverlay({ source: steerableSource() }).render(80);
+    expect(steerable.some((l) => l.includes("s steer"))).toBe(true);
+
+    const snapshot = makeOverlay({ source: fakeSource() }).render(80);
+    expect(snapshot.some((l) => l.includes("s steer"))).toBe(false);
+
+    const finished = makeOverlay({
+      source: fakeSource({ steer: vi.fn(async () => ({ kind: "delivered" }) as const) }),
+    }).render(80);
+    expect(finished.some((l) => l.includes("s steer"))).toBe(false);
+  });
+
+  it("opens the composer on s and sends the message on Enter", async () => {
+    const source = steerableSource();
+    const overlay = makeOverlay({ source });
+    overlay.render(80);
+
+    overlay.handleInput("s");
+    const composing = overlay.render(80);
+    expect(composing.some((l) => l.includes("Steer"))).toBe(true);
+    expect(composing.some((l) => l.includes("Enter send · Esc cancel"))).toBe(true);
+
+    typeText(overlay, "focus on the tests");
+    overlay.handleInput("\r");
+    await flush();
+
+    expect(source.steer).toHaveBeenCalledWith("focus on the tests");
+    const after = overlay.render(80);
+    expect(after.some((l) => l.includes("sent"))).toBe(true);
+    expect(after.some((l) => l.includes("Enter send · Esc cancel"))).toBe(false);
+  });
+
+  it("routes keys to the composer instead of scroll or close while composing", async () => {
+    const done = vi.fn();
+    const source = steerableSource();
+    const overlay = makeOverlay({ source, done });
+    overlay.render(80);
+
+    overlay.handleInput("s");
+    typeText(overlay, "jq");
+    overlay.handleInput("\r");
+    await flush();
+
+    expect(source.steer).toHaveBeenCalledWith("jq");
+    expect(done).not.toHaveBeenCalled();
+  });
+
+  it("Escape cancels the composer without closing the overlay", () => {
+    const done = vi.fn();
+    const source = steerableSource();
+    const overlay = makeOverlay({ source, done });
+    overlay.render(80);
+
+    overlay.handleInput("s");
+    overlay.handleInput("\x1b");
+    expect(done).not.toHaveBeenCalled();
+    expect(overlay.render(80).some((l) => l.includes("Enter send · Esc cancel"))).toBe(false);
+
+    overlay.handleInput("\x1b");
+    expect(done).toHaveBeenCalledWith(undefined);
+  });
+
+  it("an empty submit closes the composer without steering", async () => {
+    const source = steerableSource();
+    const overlay = makeOverlay({ source });
+    overlay.render(80);
+
+    overlay.handleInput("s");
+    overlay.handleInput("\r");
+    await flush();
+
+    expect(source.steer).not.toHaveBeenCalled();
+    expect(overlay.render(80).some((l) => l.includes("Enter send · Esc cancel"))).toBe(false);
+  });
+
+  it("ignores s when the source is not steerable", () => {
+    const overlay = makeOverlay({ source: fakeSource() });
+    overlay.render(80);
+    overlay.handleInput("s");
+    expect(overlay.render(80).some((l) => l.includes("Enter send · Esc cancel"))).toBe(false);
+  });
+
+  it("keeps the overlay height constant while composing", () => {
+    const overlay = makeOverlay({ source: steerableSource() });
+    const before = overlay.render(80).length;
+    overlay.handleInput("s");
+    expect(overlay.render(80).length).toBe(before);
+  });
+
+  it("reports a rejected steer with the agent's status", async () => {
+    const source = steerableSource({
+      steer: vi.fn(async () => ({ kind: "rejected", status: "completed" }) as const),
+    });
+    const overlay = makeOverlay({ source });
+    overlay.render(80);
+
+    overlay.handleInput("s");
+    typeText(overlay, "too late");
+    overlay.handleInput("\r");
+    await flush();
+
+    expect(overlay.render(80).some((l) => l.includes("completed"))).toBe(true);
+  });
+
+  it("surfaces a steer delivery failure", async () => {
+    const source = steerableSource({
+      steer: vi.fn(async () => {
+        throw new Error("boom");
+      }),
+    });
+    const overlay = makeOverlay({ source });
+    overlay.render(80);
+
+    overlay.handleInput("s");
+    typeText(overlay, "anything");
+    overlay.handleInput("\r");
+    await flush();
+
+    expect(overlay.render(80).some((l) => l.includes("boom"))).toBe(true);
+  });
+
+  it("notifies onSteered for delivered steers but not rejected ones", async () => {
+    const onSteered = vi.fn();
+    const delivered = makeOverlay({ source: steerableSource(), onSteered });
+    delivered.render(80);
+    delivered.handleInput("s");
+    typeText(delivered, "go left");
+    delivered.handleInput("\r");
+    await flush();
+    expect(onSteered).toHaveBeenCalledWith("go left");
+
+    const onSteeredRejected = vi.fn();
+    const rejected = makeOverlay({
+      source: steerableSource({
+        steer: vi.fn(async () => ({ kind: "rejected", status: "completed" }) as const),
+      }),
+      onSteered: onSteeredRejected,
+    });
+    rejected.render(80);
+    rejected.handleInput("s");
+    typeText(rejected, "go right");
+    rejected.handleInput("\r");
+    await flush();
+    expect(onSteeredRejected).not.toHaveBeenCalled();
+  });
+
+  it("wires overlay steers from a live entry to onSteered with the record id", async () => {
+    const record = makeNavigable({ description: "Steer me", status: "running", completedAt: undefined });
+    const onSteered = vi.fn();
+    const ui = {
+      // Pick the first (and only) entry regardless of its live-duration label.
+      select: vi.fn().mockImplementation(async (_title: string, options: string[]) => options[0]),
+      notify: vi.fn(),
+      custom: vi.fn().mockResolvedValue(undefined),
+    };
+
+    await new SessionNavigatorHandler().handle({
+      ui,
+      agents: [record],
+      registry,
+      cwd: "/test/cwd",
+      readFile: () => {
+        throw new Error("readFile not expected");
+      },
+      onSteered,
+    });
+
+    const factory = ui.custom.mock.calls[0][0] as (
+      tui: TUI,
+      theme: ReturnType<typeof ansiTheme>,
+      kb: unknown,
+      done: (r: undefined) => void,
+    ) => TranscriptOverlay;
+    const overlay = factory(mockTui(), ansiTheme(), undefined, vi.fn());
+    overlay.render(80);
+    overlay.handleInput("s");
+    for (const ch of "drop that approach") overlay.handleInput(ch);
+    overlay.handleInput("\r");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(record.steer).toHaveBeenCalledWith("drop that approach");
+    expect(onSteered).toHaveBeenCalledWith("agent-1", "drop that approach");
   });
 });
